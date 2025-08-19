@@ -1,0 +1,96 @@
+---
+- name: Setup ambiente local com 3 serviços Fhir
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+    base_dir: "/opt/fhir-patrick"
+    repos:
+      - name: fhir-collector
+        repo: "https://github.com/barretodsp/fhir-collector.git"
+        dirs: ["logs", "localstack-data", "valkey"]
+      - name: fhir-worker
+        repo: "https://github.com/barretodsp/fhir-worker.git"
+        dirs: ["logs"]
+      - name: fhir-api
+        repo: "https://github.com/barretodsp/fhir-api.git"
+        dirs: ["logs", "mongo/data"]
+
+  tasks:
+    - name: Garantir pacotes necessários (Docker, Git, Docker Compose)
+      package:
+        name:
+          - docker
+          - docker-compose
+          - git
+        state: present
+      become: true
+    
+    - name: Parar containers existentes
+      command: docker compose down
+      args:
+        chdir: "{{ base_dir }}/{{ item.name }}"
+      loop: "{{ repos }}"
+
+    - name: Criar rede docker fhir-network
+      community.docker.docker_network:
+        name: fhir-network
+        state: present
+
+
+    - name: Apagar diretório se existir
+      file:
+        path: "{{ base_dir }}/{{ item.name }}"
+        state: absent
+      loop: "{{ repos }}"
+      become: true
+
+
+    - name: Criar diretórios de serviços base
+      file:
+        path: "{{ base_dir }}/{{ item.name }}"
+        state: directory
+        recurse: true
+        mode: '0777'
+      loop: "{{ repos }}"
+      become: true
+
+
+    - name: Clonar repositórios
+      git:
+        repo: "{{ item.repo }}"
+        dest: "{{ base_dir }}/{{ item.name }}"
+        version: main
+        force: yes
+      loop: "{{ repos }}"
+
+
+    - name: Listar arquivos do diretório localstack
+      command: ls -l "{{ base_dir }}/fhir-collector/localstack"
+      register: localstack_files
+
+    - debug:
+        var: localstack_files.stdout_lines
+
+    - name: Garantir permissão de execução para script específico
+      file:
+        path: "{{ base_dir }}/fhir-collector/localstack/init-sqs.sh"
+        mode: '0755'
+
+
+    - name: Criar diretórios persistentes (logs, mongo/data, etc) em cada repo
+      file:
+        path: "{{ base_dir }}/{{ item.0.name }}/{{ item.1 }}"
+        state: directory
+        recurse: true
+        mode: '0777'
+      loop: "{{ repos | subelements('dirs') }}"
+      become: true
+
+    - name: Subir containers via docker-compose
+      command: docker compose up -d
+      args:
+        chdir: "{{ base_dir }}/{{ item.name }}"
+      loop: "{{ repos }}"
